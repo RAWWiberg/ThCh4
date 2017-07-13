@@ -1,0 +1,188 @@
+#####
+# PSEUDOOBSCURA ISOFEMALE LINES BIOINFORMATICS PIPELINE
+# R. Axel W. Wiberg
+#####
+# This pipeline contains some example command lines for steps in the bioinformatic processing of samples
+
+#CGR-wild_lines 4 TruSeq libraries, 1 Lane on HiSeq
+
+###
+# 1) Trim adapters etc. with trimmomatic
+###
+# Software:
+# trimmomatic v.0.32
+
+# Run trimmomatic for each pair of files
+
+$ java -jar ${trimmomatic} PE -phred33 \
+	R1_001.fastq.gz R2_001.fastq.gz \
+	tqc_R1_pe.fq.gz ftqc_R1_se.fq.gz \
+	tqc_R2_pe.fq.gz ftqc_R2_se.fq.gz \
+	MINLEN:20 ILLUMINACLIP:${adapters}/TruSeq3-PE.fa:2:30:10 SLIDINGWINDOW:1:20 MINLEN:20
+
+###
+# 2) Map to the pseudoobscura reference genome. Map each pool separately. Below is a sample for one pool (2SLOC9) 
+###
+# Software: 
+# bwa 0.7.7
+
+$ bwa mem -t 5  /tmp/dpse-all-chromosome-r3.1.fasta 2SLOC9_R1_pe.fq.gz 2SLOC9_R2_pe.fq.gz > 2SLOC9.sam
+
+$ samtools view -Sb -q 20 2SLOC9.sam > 2SLOC9.bam
+
+# Sort and remove duplicates (clean .bams throughout)
+$ samtools sort -@ 5 2SLOC9.bam 2SLOC9_srt
+
+$ samtools rmdup 2SLOC9_srt.bam 2SLOC9_srt_rmdup.bam
+
+###
+# 3) Re-aling around indels for better SNP calling. 
+# This step is done with tools from GATK
+###
+# Software:
+# bwa mem v.0.7.7
+# samtools v. 1.2
+# gatk v. 3.2.2
+# picard v.1.118
+
+# Add random "readgroup" to .bam. This is a weird step that is needed for GATK to understand the .bam files
+
+$ java -jar $picard/AddOrReplaceReadGroups.jar \
+	I= 2SLOC9_sorted_rmdup_sorted.bam \
+	O= 2SLOC9_sorted_rmdup_sorted_rdgrp.bam \
+	RGID=1 \
+	RGLB=L1 \
+	RGPL=illumina \
+	RGPU=NONE \
+	RGSM=2SLOC9
+
+# Index .bam file
+
+$ samtools index 2SLOC9_sorted_rmdup_sorted_rdgrp.bam
+
+# Re-align around indels
+$ java -Xmx2g -jar $gatk \
+	-T RealignerTargetCreator \
+	-R dpse-all-chromosome-r3.1.fasta \
+	-I 2SLOC9_sorted_rmdup_sorted_rdgrp.bam \
+	-o 2SLOC9_sorted_rmdup_sorted_rdgrp.intervals
+
+$ java -Xmx4g -jar $gatk \
+	-T IndelRealigner \
+	-R /tmp/dpse-all-chromosome-r3.1.fasta \
+	-I 2SLOC9_sorted_rmdup_sorted_rdgrp.bam \
+	-targetIntervals 2SLOC9_sorted_rmdup_sorted_rdgrp.intervals \
+	-o 2SLOC9_sorted_rmdup_sorted_rdgrp_indraln.bam
+
+# Sort reads and index them
+$ samtools sort -@ 5 2SLOC9_sorted_rmdup_sorted_rdgrp_indraln.bam 2SLOC9_orted_rmdup_sorted_rdgrp_indraln_srt
+
+$ samtools index 2SLOC9_sorted_rmdup_sorted_rdgrp_indraln_srt.bam
+
+# Subset the bam files to 47 million reads/alignments
+$ cat <(samtools view -H 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt.bam) <(samtools view 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt.bam | shuf -n 47900000) > 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs.sam
+
+# Convert to .bam
+$ samtools view -b 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs.sam > 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs.bam
+
+# Sort reads and index
+$ samtools sort 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs.bam 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs_srt
+
+$ samtools index 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs_srt.bam
+
+# Get coverage again 
+$ genomeCoverageBed -ibam 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs_srt.bam > 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs_srt.cov
+
+# Grep for just genomewide stats
+$ cat 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs_srt.cov | grep "^" > 2SLOC9_srt_rmdup_srt_rdgrp_indraln_srt_subs_srt_hist.txt
+
+###
+# 4) Call variants and estimate/test allele frequencies
+###
+# Software:
+# samtools v. 1.2
+# Popoolation2
+# see R script: "pseudo_wild_alfreq_analysis.R"
+
+# This step is where the style of analysis becomes important. There are several different tools designed for 
+# estimating allele frequencies in pool-seq data. Some of them take pileup files, others take .bam files. Below is a list + references:
+
+
+# Run mpileup (see script "pseudo_wild_SNP_calling_combined.bsh")
+$ samtools mpileup \
+	-d 1500000 \
+	-I \
+	-f dpse-all-chromosome-r3.1.fasta \
+	2SLOC9.bam \ # High
+	SLOB7.bam \  # Low
+	LEW17.bam \  # High
+	LEW23.bam \  # Low
+	SHAC1.bam \  # High
+	SHAA10.bam \ # Low
+	> pseudo_wild.mpileup
+
+
+# Create a .sync file for PoPoolation2
+$ java -ea -Xmx7g -jar $mpi2sync --input pseudo_wild.mpileup --output pseudo_wild.sync \
+	--fastq-type sanger \
+	--min-qual 20 \
+	--threads 5
+
+# Allele frequency differences
+$ snp-frequency-diff.pl --input pseudo_wild.mpileup --output-prefix pseudo_wild --min-count 8 --min-coverage 17 --max-coverage 59
+
+# Get the treatment line comparisons from the full pairwise file.
+$ awk '{FS=OFS="\t"}{print $1,$2,$3,$4,$5,$6,$7,$8,$9,$18,$23}' pseudo_wild_SHA-SLOB7subs_pwc > pseudo_wild_SHA-SLOB7subs_trcomp_pwc_red.tab
+
+# Remove any "unknown" contigs
+$ cat pseudo_wild_SHA-SLOB7subs_trcomp_pwc_red.tab | awk '{FS=OFS="\t"}{if($1!~"Unknown") print $0}' > pseudo_wild_SHA-SLOB7subs_trcomp_pwc_red_chr.tab
+
+# Remove any "na" in "diff" column: THIS CAN BE DONE LATER IN R
+$ cat pseudo_wild_trcomp_pwc.tab | awk '{FS=OFS="\t"}{if($9!~"na" && $10!~"na" && $11!~"na" && $12 !~"na")  print $0}' > pseudo_wild_trcomp_pwc_red.tab
+
+# Plot/Analyse in R
+
+###
+# 5) Functional Analysis
+###
+#Software:
+# bedtools v. 2.17.0
+# see R script: "pseudo_wild_closest_gene_analysis.R"
+
+# This part uses the same modified D. pseudoobscura annotat as in Chapter three: see https://github.com/RAWWiberg/ThCh3
+
+# Find the closes annotated gene to each SNP
+
+$ gtf2bed < pseudo_wild_all_snps.gtf > pseudo_wild_all_snps.bed
+
+$ closestBed -a SNPs.bed -b Dpse_genes_dmelnames.bed -D b -t all > snps_closest_genes.tab
+
+# reduce the table and print just the list of genes.
+$ awk 'BEGIN {OFS=FS="\t"}{ print $5 }' snps_closest_genes_glm_reduced.tab > snps_closest_genes_glm_reduced_dpse_names.list
+
+# reduce the table and print just the location of SNPs, closest genes and distance to nearest gene.
+$ awk 'BEGIN {OFS=FS="\t"}{ print $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$14,$21 }' snps_closest_genes_glm.tab > snps_closest_genes_glm_reduced.tab
+
+
+# Run GOwinda
+$ java -Xmx4G -jar ~/bin/Gowinda-1.12.jar \
+	--snp-file pseudo_wild_all_snps.tab \
+	--candidate-snp-file pseudo_wild_fixed_snps.tab \
+	--annotation-file Dpse_genes_dmelnames.gtf \
+	--gene-set-file dmel_funcassociate_go_associations_mod.txt \
+	--output-file dpse_wild_fixed_GOwinda.out \
+	--simulations 1000000 \
+	--gene-definition updownstream1000000
+
+# run MEME (ame) to test for enrichment of transcription factor binding motifs around fixed SNPs
+
+# Get sequences from SNP .gtf files
+$ gffread pseudo_wild_all_snps.gtf -g dpse-all-chromosome-r3.1.fasta -x pseudo_wild_all_snps30bp.fasta
+
+# Run AME to test for enrichment of motifs
+$ ame --oc ame_${SNPs}_out --pvalue-report-threshold 1 --control pseudo_wild_all_snps30bp.fasta ${SNPs}.fasta ${motifDB}
+
+
+
+
+

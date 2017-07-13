@@ -5,8 +5,6 @@ analysis. It contains the following files
 
 # 1) pseudo_wild_pipeline.txt
 
-This is a description of the bioinformatic steps with example command lines 
-
 # 2) R scripts
 
 #2.1) pseudo_wild_alfreq_analysis.R
